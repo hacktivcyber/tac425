@@ -52,8 +52,8 @@ def bootstrap_venv() -> None:
         try:
             subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=True)
         except subprocess.CalledProcessError:
-            subprocess.run(["sudo", "apt", "update"], check=True)
-            subprocess.run(["sudo", "apt", "install", "-y", "python3-venv"], check=True)
+            subprocess.run(["sudo", "apt-get", "update"], check=True)
+            subprocess.run(["sudo", "apt-get", "install", "-y", "python3-venv"], check=True)
             subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=True)
 
     if req_file.exists():
@@ -172,8 +172,8 @@ def ensure_host_tools() -> None:
         log("[=] Host tools already present")
         return
 
-    run(["sudo", "apt", "update"], "apt update (host tools)")
-    run(["sudo", "apt", "install", "-y", *sorted(set(missing))], "Install host tools")
+    run(["sudo", "apt-get", "update"], "apt-get update (host tools)")
+    run(["sudo", "apt-get", "install", "-y", *sorted(set(missing))], "Install host tools")
 
 
 
@@ -186,8 +186,8 @@ def ensure_wordlists() -> None:
         if rockyou_gz.exists():
             run(["sudo", "gzip", "-d", str(rockyou_gz)], "Unzip rockyou")
         else:
-            run(["sudo", "apt", "update"], "apt update (wordlists)")
-            run(["sudo", "apt", "install", "-y", "wordlists"], "Install wordlists")
+            run(["sudo", "apt-get", "update"], "apt-get update (wordlists)")
+            run(["sudo", "apt-get", "install", "-y", "wordlists"], "Install wordlists")
             if rockyou_gz.exists():
                 run(["sudo", "gzip", "-d", str(rockyou_gz)], "Unzip rockyou")
 
@@ -217,9 +217,9 @@ def create_wordlist_symlink() -> None:
 def ensure_docker() -> tuple[list[str], str]:
     if shutil.which("docker") is None:
         log("[!] Docker not found; installing Docker Engine")
-        run(["sudo", "apt", "update"], "apt update")
-        run(["sudo", "apt", "install", "-y", "docker.io"], "Install Docker")
-        run(["sudo", "apt", "install", "-y", "docker-compose"], "Install Docker Compose")
+        run(["sudo", "apt-get", "update"], "apt-get update")
+        run(["sudo", "apt-get", "install", "-y", "docker.io"], "Install Docker")
+        run(["sudo", "apt-get", "install", "-y", "docker-compose"], "Install Docker Compose")
         run(["sudo", "systemctl", "enable", "--now", "docker"], "Enable and start Docker")
 
     docker_cmd = ["docker"]
