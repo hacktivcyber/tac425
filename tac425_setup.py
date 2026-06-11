@@ -218,7 +218,7 @@ def ensure_docker() -> tuple[list[str], str]:
     if shutil.which("docker") is None:
         log("[!] Docker not found; installing Docker Engine")
         run(["sudo", "apt-get", "update"], "apt-get update")
-        run(["sudo", "apt-get", "install", "-y", "docker.io"], "Install Docker")
+        run(["sudo", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "docker.io"], "Install Docker")
         run(["sudo", "apt-get", "install", "-y", "docker-compose"], "Install Docker Compose")
         run(["sudo", "systemctl", "enable", "--now", "docker"], "Enable and start Docker")
 
