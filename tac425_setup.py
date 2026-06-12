@@ -446,7 +446,7 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
             if [ ! -f .env ] && [ -f .env.example ]; then
                 cp .env.example .env
             fi
-            {compose_cmd} -f docker-compose.yml up -d --build
+            {compose_cmd} -f docker-compose.yml up -d
             echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}"
         """)
 
@@ -486,6 +486,26 @@ def healthcheck_command(app: dict) -> str:
     if app["kind"] == "dns":
         return f"dig +time=2 +tries=1 @127.0.0.1 -p {app['host_port']} {app['zone']} SOA >/dev/null"
     return f"curl -fsS http://127.0.0.1:{app['host_port']} >/dev/null"
+
+
+
+def build_zero_health_container(compose_cmd: str) -> None:
+    state = load_state()
+    ensure_zero_health_repo()
+
+    if state.get("zero_health_built"):
+        log("[=] Zero-Health already built")
+        return
+
+    compose_parts = compose_cmd.split()
+    run_retry(
+        compose_parts + ["-f", "docker-compose.yml", "build"],
+        "Build Zero-Health",
+        cwd=ZERO_HEALTH_DIR,
+    )
+
+    state["zero_health_built"] = True
+    save_state(state)
 
 
 def generate_scripts(compose_cmd: str) -> None:
@@ -548,7 +568,7 @@ def main() -> None:
     ensure_wordlists()
     create_wordlist_symlink()
     build_or_pull_apps(docker_cmd)
-    ensure_zero_health_repo()
+    build_zero_health_container(compose_cmd)
     generate_scripts(compose_cmd)
     write_summary()
     print_summary()
