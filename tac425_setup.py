@@ -26,17 +26,17 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WORK_DIR = Path.home() / "TAC425"
-CONTAINER_SCRIPTS_DIR = WORK_DIR / "container_scripts"
 EXTERNAL_DIR = WORK_DIR / "external"
 DNS_DIR = EXTERNAL_DIR / "dns_zone"
 ZERO_HEALTH_DIR = EXTERNAL_DIR / "Zero-Health"
 WORDLISTS_LINK = WORK_DIR / "wordlists"
+CONTAINER_SCRIPTS_DIR = WORK_DIR / "container_scripts"
 VENV_DIR = WORK_DIR / ".venv"
 LOG_FILE = WORK_DIR / "install.log"
 SUMMARY_FILE = WORK_DIR / "install_summary.txt"
 STATE_FILE = WORK_DIR / "install_state.json"
 
-for p in (WORK_DIR, CONTAINER_SCRIPTS_DIR, EXTERNAL_DIR):
+for p in (WORK_DIR, EXTERNAL_DIR, CONTAINER_SCRIPTS_DIR):
     p.mkdir(parents=True, exist_ok=True)
 
 
@@ -248,10 +248,8 @@ def ensure_docker() -> tuple[list[str], str]:
     else:
         run(docker_cmd + ["compose", "version"], "Check Docker Compose")
 
-    if shutil.which("npm") is None:
-        run(["sudo", "apt-get", "install", "-y", "npm"], "Install npm")
-
     return docker_cmd, compose_cmd
+
 
 def ensure_zero_health_repo() -> None:
     if not ZERO_HEALTH_DIR.exists():
@@ -418,24 +416,6 @@ def generate_dns_assets() -> None:
     log("[+] DNS assets ready")
     return dns_dir
 
-def build_zero_health_container(compose_cmd: str) -> None:
-    state = load_state()
-    ensure_zero_health_repo()
-
-    if state.get("zero_health_built"):
-        log("[=] Zero-Health already built")
-        return
-
-    compose_parts = compose_cmd.split()
-    run_retry(
-        compose_parts + ["-f", "docker-compose.yml", "-f", "docker-compose.tac425.yml", "build"],
-        "Build Zero-Health",
-        cwd=ZERO_HEALTH_DIR,
-    )
-
-    state["zero_health_built"] = True
-    save_state(state)
-
 def start_script_text(app: dict, compose_cmd: str) -> str:
     if app["kind"] == "image":
         return textwrap.dedent(f"""\
@@ -466,7 +446,7 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
             if [ ! -f .env ] && [ -f .env.example ]; then
                 cp .env.example .env
             fi
-            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml up -d --build
+            {compose_cmd} -f docker-compose.yml up -d --build
             echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}"
         """)
 
@@ -493,7 +473,7 @@ def stop_script_text(app: dict, compose_cmd: str) -> str:
             #!/usr/bin/env bash
             set -euo pipefail
             cd "{app['repo_dir']}"
-            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml down -v
+            {compose_cmd} -f docker-compose.yml down -v
             echo "[+] {app['label']} stopped"
         """)
 
@@ -508,7 +488,7 @@ def healthcheck_command(app: dict) -> str:
     return f"curl -fsS http://127.0.0.1:{app['host_port']} >/dev/null"
 
 
-def generate_scripts(compose_cmd: str) -> None:def generate_scripts(compose_cmd: str) -> None:
+def generate_scripts(compose_cmd: str) -> None:
     CONTAINER_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
     for app in APP_SPECS:
@@ -522,6 +502,7 @@ def generate_scripts(compose_cmd: str) -> None:def generate_scripts(compose_cmd:
         stop_path.chmod(0o755)
 
 def write_summary() -> None:
+
     elapsed = time.time() - INSTALL_START_TIME
     SUMMARY_FILE.write_text(textwrap.dedent(f"""\
         TAC425 Installer Summary
@@ -567,7 +548,7 @@ def main() -> None:
     ensure_wordlists()
     create_wordlist_symlink()
     build_or_pull_apps(docker_cmd)
-    build_zero_health_container(compose_cmd)
+    ensure_zero_health_repo()
     generate_scripts(compose_cmd)
     write_summary()
     print_summary()
