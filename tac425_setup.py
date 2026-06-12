@@ -31,12 +31,13 @@ EXTERNAL_DIR = WORK_DIR / "external"
 DNS_DIR = EXTERNAL_DIR / "dns_zone"
 ZERO_HEALTH_DIR = EXTERNAL_DIR / "Zero-Health"
 WORDLISTS_LINK = WORK_DIR / "wordlists"
+CONTAINER_SCRIPTS_DIR = WORK_DIR / "container_scripts"
 VENV_DIR = WORK_DIR / ".venv"
 LOG_FILE = WORK_DIR / "install.log"
 SUMMARY_FILE = WORK_DIR / "install_summary.txt"
 STATE_FILE = WORK_DIR / "install_state.json"
 
-for p in (WORK_DIR, LABS_DIR, EXTERNAL_DIR):
+for p in (WORK_DIR, LABS_DIR, EXTERNAL_DIR, CONTAINER_SCRIPTS_DIR):
     p.mkdir(parents=True, exist_ok=True)
 
 
@@ -248,6 +249,9 @@ def ensure_docker() -> tuple[list[str], str]:
     else:
         run(docker_cmd + ["compose", "version"], "Check Docker Compose")
 
+    if shutil.which("npm") is None:
+        run(["sudo", "apt-get", "install", "-y", "npm"], "Install npm")
+
     return docker_cmd, compose_cmd
 
 
@@ -368,7 +372,9 @@ def build_or_pull_apps(docker_cmd: list[str]) -> None:
             dns_dir = generate_dns_assets()
             run_retry(docker_cmd + ["build", "-t", app["image"], str(dns_dir)], f"Build {app['name']}")
         else:
-            ensure_zero_health_repo()
+            # Zero-Health is built separately so we can control when the
+            # build happens and keep the start script lightweight.
+            continue
 
         state[app["name"]] = True
         save_state(state)
@@ -440,6 +446,26 @@ def generate_dns_assets() -> None:
     log("[+] DNS assets ready")
     return dns_dir
 
+
+def build_zero_health_container(compose_cmd: str) -> None:
+    state = load_state()
+    ensure_zero_health_repo()
+
+    if state.get("zero_health_built"):
+        log("[=] Zero-Health already built")
+        return
+
+    compose_parts = compose_cmd.split()
+    run_retry(
+        compose_parts + ["-f", "docker-compose.yml", "-f", "docker-compose.tac425.yml", "build"],
+        "Build Zero-Health",
+        cwd=ZERO_HEALTH_DIR,
+    )
+
+    state["zero_health_built"] = True
+    save_state(state)
+
+
 def start_script_text(app: dict, compose_cmd: str) -> str:
     if app["kind"] == "image":
         return textwrap.dedent(f"""\
@@ -470,7 +496,7 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
             if [ ! -f .env ] && [ -f .env.example ]; then
                 cp .env.example .env
             fi
-            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml up -d --build
+            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml up -d
             echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}"
         """)
 
@@ -513,54 +539,35 @@ def healthcheck_command(app: dict) -> str:
 
 
 def generate_scripts(compose_cmd: str) -> None:
-    for idx, app in enumerate(APP_SPECS, start=1):
-        week_dir = LABS_DIR / f"week{idx:02d}"
-        week_dir.mkdir(parents=True, exist_ok=True)
+    CONTAINER_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
-        start_path = week_dir / f"lab{idx:02d}_start.sh"
-        stop_path = week_dir / f"lab{idx:02d}_stop.sh"
-        check_path = week_dir / "healthcheck.sh"
+    for app in APP_SPECS:
+        start_path = CONTAINER_SCRIPTS_DIR / f"{app['name']}_start.sh"
+        stop_path = CONTAINER_SCRIPTS_DIR / f"{app['name']}_stop.sh"
 
         start_path.write_text(start_script_text(app, compose_cmd))
         stop_path.write_text(stop_script_text(app, compose_cmd))
-        check_path.write_text(textwrap.dedent(f"""\
-            #!/usr/bin/env bash
-            set -euo pipefail
-            if {healthcheck_command(app)}; then
-                echo "[+] {app['label']} healthy"
-            else
-                echo "[!] {app['label']} not responding"
-                exit 1
-            fi
-        """))
 
-        for p in (start_path, stop_path, check_path):
-            p.chmod(0o755)
-
-        for suffix, content in {
-            "start": f"cd \"$(dirname \"$0\")/labs/week{idx:02d}\"\n./lab{idx:02d}_start.sh\n",
-            "stop": f"cd \"$(dirname \"$0\")/labs/week{idx:02d}\"\n./lab{idx:02d}_stop.sh\n",
-            "check": f"cd \"$(dirname \"$0\")/labs/week{idx:02d}\"\n./healthcheck.sh\n",
-        }.items():
-            root = WORK_DIR / f"lab{idx:02d}_{suffix}.sh"
-            root.write_text(f"#!/usr/bin/env bash\n{content}")
-            root.chmod(0o755)
-
+        start_path.chmod(0o755)
+        stop_path.chmod(0o755)
 
 def write_summary() -> None:
     elapsed = time.time() - INSTALL_START_TIME
-    SUMMARY_FILE.write_text(textwrap.dedent(f"""\
-        TAC425 Installer Summary
+    SUMMARY_FILE.write_text(textwrap.dedent(f"""        TAC425 Installer Summary
         ========================
         Work dir: {WORK_DIR}
         Log file: {LOG_FILE}
         Installation time: {format_elapsed_time(elapsed)}
 
         Access URLs:
-          Juice Shop   -> http://127.0.0.1:2000
-          WrongSecrets -> http://127.0.0.1:3000
-          WebGoat      -> http://127.0.0.1:4000/WebGoat
-          Zero Health  -> http://127.0.0.1:5000
+          DNS Zone Transfer -> http://127.0.0.1:5353 (DNS)
+          Juice Shop        -> http://127.0.0.1:2000
+          WrongSecrets      -> http://127.0.0.1:3000
+          WebGoat           -> http://127.0.0.1:4000/WebGoat
+          Zero Health       -> http://127.0.0.1:5000
+
+        Container scripts:
+          {CONTAINER_SCRIPTS_DIR}
     """))
 
 
@@ -572,12 +579,13 @@ def print_summary() -> None:
     print(f"Log file: {LOG_FILE}")
     print(f"Total installation time: {format_elapsed_time(elapsed)}")
     print("Access URLs:")
-    print("  Juice Shop   -> http://127.0.0.1:2000")
-    print("  WrongSecrets -> http://127.0.0.1:3000")
-    print("  WebGoat      -> http://127.0.0.1:4000/WebGoat")
-    print("  Zero Health  -> http://127.0.0.1:5000")
+    print("  DNS Zone Transfer -> http://127.0.0.1:5353 (DNS)")
+    print("  Juice Shop        -> http://127.0.0.1:2000")
+    print("  WrongSecrets      -> http://127.0.0.1:3000")
+    print("  WebGoat           -> http://127.0.0.1:4000/WebGoat")
+    print("  Zero Health       -> http://127.0.0.1:5000")
+    print(f"Container scripts: {CONTAINER_SCRIPTS_DIR}")
     print("")
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="TAC425 installer")
@@ -593,7 +601,7 @@ def main() -> None:
     ensure_wordlists()
     create_wordlist_symlink()
     build_or_pull_apps(docker_cmd)
-    ensure_zero_health_repo()
+    build_zero_health_container(compose_cmd)
     generate_scripts(compose_cmd)
     write_summary()
     print_summary()
