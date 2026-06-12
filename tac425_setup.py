@@ -248,6 +248,9 @@ def ensure_docker() -> tuple[list[str], str]:
     else:
         run(docker_cmd + ["compose", "version"], "Check Docker Compose")
 
+    if shutil.which("npm") is None:
+        run(["sudo", "apt-get", "install", "-y", "npm"], "Install npm")
+
     return docker_cmd, compose_cmd
 
 
@@ -572,7 +575,6 @@ def main() -> None:
     generate_scripts(compose_cmd)
     write_summary()
     print_summary()
-
 
 if __name__ == "__main__":
     main()
