@@ -31,13 +31,12 @@ EXTERNAL_DIR = WORK_DIR / "external"
 DNS_DIR = EXTERNAL_DIR / "dns_zone"
 ZERO_HEALTH_DIR = EXTERNAL_DIR / "Zero-Health"
 WORDLISTS_LINK = WORK_DIR / "wordlists"
-CONTAINER_SCRIPTS_DIR = WORK_DIR / "container_scripts"
 VENV_DIR = WORK_DIR / ".venv"
 LOG_FILE = WORK_DIR / "install.log"
 SUMMARY_FILE = WORK_DIR / "install_summary.txt"
 STATE_FILE = WORK_DIR / "install_state.json"
 
-for p in (WORK_DIR, LABS_DIR, EXTERNAL_DIR, CONTAINER_SCRIPTS_DIR):
+for p in (WORK_DIR, LABS_DIR, EXTERNAL_DIR):
     p.mkdir(parents=True, exist_ok=True)
 
 
@@ -249,9 +248,6 @@ def ensure_docker() -> tuple[list[str], str]:
     else:
         run(docker_cmd + ["compose", "version"], "Check Docker Compose")
 
-    if shutil.which("npm") is None:
-        run(["sudo", "apt-get", "install", "-y", "npm"], "Install npm")
-
     return docker_cmd, compose_cmd
 
 
@@ -269,10 +265,6 @@ def ensure_zero_health_repo() -> None:
             "LLM_PROVIDER": "openai",
             "LLM_API_KEY": "sk-placeholder",
             "LLM_MODEL": "gpt-4o-mini",
-            "PORT": "5000",
-            "VITE_API_URL": "http://localhost:5001",
-            "FRONTEND_URL": "http://localhost:5000",
-            "OLLAMA_PORT": "11435",
         }
         for key, value in replacements.items():
             lines = env_text.splitlines()
@@ -290,26 +282,6 @@ def ensure_zero_health_repo() -> None:
         env_file.write_text(env_text + "\n")
         log("[+] Wrote Zero-Health .env")
 
-    override = ZERO_HEALTH_DIR / "docker-compose.tac425.yml"
-    override.write_text(textwrap.dedent("""\
-        services:
-          db:
-            ports:
-              - "127.0.0.1:5432:5432"
-
-          server:
-            ports:
-              - "127.0.0.1:5001:5000"
-
-          client:
-            ports:
-              - "127.0.0.1:5000:3000"
-            build:
-              args:
-                VITE_API_URL: http://localhost:5001
-    """))
-    log("[+] Wrote Zero-Health compose override")
-
 
 APP_SPECS = [
     {
@@ -317,7 +289,7 @@ APP_SPECS = [
         "label": "DNS Zone Transfer",
         "kind": "dns",
         "image": "tac425/dns_zone:latest",
-        "host_port": 5353,
+        "host_port": 53,
         "container_port": 53,
         "zone": "tac425.net",
     },
@@ -326,7 +298,7 @@ APP_SPECS = [
         "label": "Juice Shop",
         "kind": "image",
         "image": "bkimminich/juice-shop",
-        "host_port": 2000,
+        "host_port": 3000,
         "container_port": 3000,
         "path": "/",
     },
@@ -335,7 +307,7 @@ APP_SPECS = [
         "label": "WrongSecrets",
         "kind": "image",
         "image": "jeroenwillemsen/wrongsecrets:latest-no-vault",
-        "host_port": 3000,
+        "host_port": 8080,
         "container_port": 8080,
         "path": "/",
     },
@@ -344,7 +316,7 @@ APP_SPECS = [
         "label": "WebGoat",
         "kind": "image",
         "image": "webgoat/webgoat",
-        "host_port": 4000,
+        "host_port": 8888,
         "container_port": 8080,
         "path": "/WebGoat",
     },
@@ -372,9 +344,7 @@ def build_or_pull_apps(docker_cmd: list[str]) -> None:
             dns_dir = generate_dns_assets()
             run_retry(docker_cmd + ["build", "-t", app["image"], str(dns_dir)], f"Build {app['name']}")
         else:
-            # Zero-Health is built separately so we can control when the
-            # build happens and keep the start script lightweight.
-            continue
+            ensure_zero_health_repo()
 
         state[app["name"]] = True
         save_state(state)
@@ -446,26 +416,6 @@ def generate_dns_assets() -> None:
     log("[+] DNS assets ready")
     return dns_dir
 
-
-def build_zero_health_container(compose_cmd: str) -> None:
-    state = load_state()
-    ensure_zero_health_repo()
-
-    if state.get("zero_health_built"):
-        log("[=] Zero-Health already built")
-        return
-
-    compose_parts = compose_cmd.split()
-    run_retry(
-        compose_parts + ["-f", "docker-compose.yml", "-f", "docker-compose.tac425.yml", "build"],
-        "Build Zero-Health",
-        cwd=ZERO_HEALTH_DIR,
-    )
-
-    state["zero_health_built"] = True
-    save_state(state)
-
-
 def start_script_text(app: dict, compose_cmd: str) -> str:
     if app["kind"] == "image":
         return textwrap.dedent(f"""\
@@ -496,7 +446,7 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
             if [ ! -f .env ] && [ -f .env.example ]; then
                 cp .env.example .env
             fi
-            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml up -d
+            {compose_cmd} -f docker-compose.yml up -d --build
             echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}"
         """)
 
@@ -523,7 +473,7 @@ def stop_script_text(app: dict, compose_cmd: str) -> str:
             #!/usr/bin/env bash
             set -euo pipefail
             cd "{app['repo_dir']}"
-            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml down -v
+            {compose_cmd} -f docker-compose.yml down -v
             echo "[+] {app['label']} stopped"
         """)
 
@@ -539,35 +489,54 @@ def healthcheck_command(app: dict) -> str:
 
 
 def generate_scripts(compose_cmd: str) -> None:
-    CONTAINER_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    for idx, app in enumerate(APP_SPECS, start=1):
+        week_dir = LABS_DIR / f"week{idx:02d}"
+        week_dir.mkdir(parents=True, exist_ok=True)
 
-    for app in APP_SPECS:
-        start_path = CONTAINER_SCRIPTS_DIR / f"{app['name']}_start.sh"
-        stop_path = CONTAINER_SCRIPTS_DIR / f"{app['name']}_stop.sh"
+        start_path = week_dir / f"lab{idx:02d}_start.sh"
+        stop_path = week_dir / f"lab{idx:02d}_stop.sh"
+        check_path = week_dir / "healthcheck.sh"
 
         start_path.write_text(start_script_text(app, compose_cmd))
         stop_path.write_text(stop_script_text(app, compose_cmd))
+        check_path.write_text(textwrap.dedent(f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            if {healthcheck_command(app)}; then
+                echo "[+] {app['label']} healthy"
+            else
+                echo "[!] {app['label']} not responding"
+                exit 1
+            fi
+        """))
 
-        start_path.chmod(0o755)
-        stop_path.chmod(0o755)
+        for p in (start_path, stop_path, check_path):
+            p.chmod(0o755)
+
+        for suffix, content in {
+            "start": f"cd \"$(dirname \"$0\")/labs/week{idx:02d}\"\n./lab{idx:02d}_start.sh\n",
+            "stop": f"cd \"$(dirname \"$0\")/labs/week{idx:02d}\"\n./lab{idx:02d}_stop.sh\n",
+            "check": f"cd \"$(dirname \"$0\")/labs/week{idx:02d}\"\n./healthcheck.sh\n",
+        }.items():
+            root = WORK_DIR / f"lab{idx:02d}_{suffix}.sh"
+            root.write_text(f"#!/usr/bin/env bash\n{content}")
+            root.chmod(0o755)
+
 
 def write_summary() -> None:
     elapsed = time.time() - INSTALL_START_TIME
-    SUMMARY_FILE.write_text(textwrap.dedent(f"""        TAC425 Installer Summary
+    SUMMARY_FILE.write_text(textwrap.dedent(f"""\
+        TAC425 Installer Summary
         ========================
         Work dir: {WORK_DIR}
         Log file: {LOG_FILE}
         Installation time: {format_elapsed_time(elapsed)}
 
         Access URLs:
-          DNS Zone Transfer -> http://127.0.0.1:5353 (DNS)
-          Juice Shop        -> http://127.0.0.1:2000
-          WrongSecrets      -> http://127.0.0.1:3000
-          WebGoat           -> http://127.0.0.1:4000/WebGoat
-          Zero Health       -> http://127.0.0.1:5000
-
-        Container scripts:
-          {CONTAINER_SCRIPTS_DIR}
+          Juice Shop   -> http://127.0.0.1:3000
+          WrongSecrets -> http://127.0.0.1:8080
+          WebGoat      -> http://127.0.0.1:8888/WebGoat
+          Zero Health  -> http://127.0.0.1:5000
     """))
 
 
@@ -579,13 +548,12 @@ def print_summary() -> None:
     print(f"Log file: {LOG_FILE}")
     print(f"Total installation time: {format_elapsed_time(elapsed)}")
     print("Access URLs:")
-    print("  DNS Zone Transfer -> http://127.0.0.1:5353 (DNS)")
-    print("  Juice Shop        -> http://127.0.0.1:2000")
-    print("  WrongSecrets      -> http://127.0.0.1:3000")
-    print("  WebGoat           -> http://127.0.0.1:4000/WebGoat")
-    print("  Zero Health       -> http://127.0.0.1:5000")
-    print(f"Container scripts: {CONTAINER_SCRIPTS_DIR}")
+    print("  Juice Shop   -> http://127.0.0.1:3000")
+    print("  WrongSecrets -> http://127.0.0.1:8080")
+    print("  WebGoat      -> http://127.0.0.1:8888/WebGoat")
+    print("  Zero Health  -> http://127.0.0.1:5000")
     print("")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="TAC425 installer")
@@ -601,7 +569,7 @@ def main() -> None:
     ensure_wordlists()
     create_wordlist_symlink()
     build_or_pull_apps(docker_cmd)
-    build_zero_health_container(compose_cmd)
+    ensure_zero_health_repo()
     generate_scripts(compose_cmd)
     write_summary()
     print_summary()
