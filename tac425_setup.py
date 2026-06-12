@@ -20,7 +20,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -331,7 +330,7 @@ APP_SPECS = [
         "name": "wrongsecrets",
         "label": "WrongSecrets",
         "kind": "image",
-        "image": "jeroenwillemsen/wrongsecrets",
+        "image": "jeroenwillemsen/wrongsecrets:latest-no-vault",
         "host_port": 3000,
         "container_port": 8080,
         "path": "/",
@@ -366,14 +365,80 @@ def build_or_pull_apps(docker_cmd: list[str]) -> None:
         if app["kind"] == "image":
             run_retry(docker_cmd + ["pull", app["image"]], f"Pull {app['name']}")
         elif app["kind"] == "dns":
-            ensure_dns_assets()
-            run_retry(docker_cmd + ["build", "-t", app["image"], str(DNS_DIR)], f"Build {app['name']}")
+            dns_dir = generate_dns_assets()
+            run_retry(docker_cmd + ["build", "-t", app["image"], str(dns_dir)], f"Build {app['name']}")
         else:
             ensure_zero_health_repo()
 
         state[app["name"]] = True
         save_state(state)
 
+
+def generate_dns_assets() -> None:
+    """
+    Create the DNS zone-transfer lab assets used by the installer.
+    """
+    dns_dir = DNS_DIR
+    dns_dir.mkdir(parents=True, exist_ok=True)
+
+    dockerfile = dns_dir / "Dockerfile"
+    named_conf = dns_dir / "named.conf"
+    named_local = dns_dir / "named.conf.local"
+    zone_file = dns_dir / "db.tac425.net"
+
+    if not dockerfile.exists():
+        dockerfile.write_text(textwrap.dedent("""\
+            FROM ubuntu:22.04
+            ENV DEBIAN_FRONTEND=noninteractive
+            RUN apt-get update && apt-get install -y bind9 bind9utils bind9-dnsutils && rm -rf /var/lib/apt/lists/*
+            COPY named.conf /etc/bind/named.conf
+            COPY named.conf.local /etc/bind/named.conf.local
+            COPY db.tac425.net /etc/bind/db.tac425.net
+            EXPOSE 53/tcp
+            EXPOSE 53/udp
+            CMD ["named", "-g", "-c", "/etc/bind/named.conf"]
+        """))
+
+    if not named_conf.exists():
+        named_conf.write_text(textwrap.dedent("""\
+            options {
+                directory "/var/cache/bind";
+                recursion yes;
+                allow-query { any; };
+                listen-on { any; };
+                listen-on-v6 { any; };
+                dnssec-validation no;
+            };
+        """))
+
+    if not named_local.exists():
+        named_local.write_text(textwrap.dedent("""\
+            zone "tac425.net" {
+                type master;
+                file "/etc/bind/db.tac425.net";
+                allow-transfer { any; };
+            };
+        """))
+
+    if not zone_file.exists():
+        zone_file.write_text(textwrap.dedent("""\
+            $TTL 604800
+            @   IN  SOA ns.tac425.net. admin.tac425.net. (
+                    1
+                    604800
+                    86400
+                    2419200
+                    604800 )
+
+            @       IN  NS  ns.tac425.net.
+            ns      IN  A   127.0.0.1
+            www     IN  A   127.0.0.1
+            dev     IN  A   127.0.0.1
+            hint    IN  TXT "Try a zone transfer"
+        """))
+
+    log("[+] DNS assets ready")
+    return dns_dir
 
 def start_script_text(app: dict, compose_cmd: str) -> str:
     if app["kind"] == "image":
@@ -385,16 +450,29 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
             echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}{app['path']}"
         """)
 
-    return textwrap.dedent(f"""\
-        #!/usr/bin/env bash
-        set -euo pipefail
-        cd "{app['repo_dir']}"
-        if [ ! -f .env ] && [ -f .env.example ]; then
-            cp .env.example .env
-        fi
-        {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml up -d --build
-        echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}"
-    """)
+    elif app["kind"] == "dns":
+        return textwrap.dedent(f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            docker rm -f {app['name']} >/dev/null 2>&1 || true
+            docker run -d --name {app['name']} --restart unless-stopped \
+              -p 127.0.0.1:{app['host_port']}:53/tcp \
+              -p 127.0.0.1:{app['host_port']}:53/udp \
+              {app['image']}
+            echo "[+] {app['label']} available for dig at 127.0.0.1:{app['host_port']} ({app['zone']})"
+        """)
+
+    else:
+        return textwrap.dedent(f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            cd "{app['repo_dir']}"
+            if [ ! -f .env ] && [ -f .env.example ]; then
+                cp .env.example .env
+            fi
+            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml up -d --build
+            echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}"
+        """)
 
 
 def stop_script_text(app: dict, compose_cmd: str) -> str:
@@ -406,13 +484,22 @@ def stop_script_text(app: dict, compose_cmd: str) -> str:
             echo "[+] {app['label']} stopped"
         """)
 
-    return textwrap.dedent(f"""\
-        #!/usr/bin/env bash
-        set -euo pipefail
-        cd "{app['repo_dir']}"
-        {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml down -v
-        echo "[+] {app['label']} stopped"
-    """)
+    elif app["kind"] == "dns":
+        return textwrap.dedent(f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            docker rm -f {app['name']} >/dev/null 2>&1 || true
+            echo "[+] {app['label']} stopped"
+        """)
+
+    else:
+        return textwrap.dedent(f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            cd "{app['repo_dir']}"
+            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml down -v
+            echo "[+] {app['label']} stopped"
+        """)
 
 
 def healthcheck_command(app: dict) -> str:
