@@ -26,6 +26,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WORK_DIR = Path.home() / "TAC425"
+LABS_DIR = WORK_DIR / "labs"
 EXTERNAL_DIR = WORK_DIR / "external"
 DNS_DIR = EXTERNAL_DIR / "dns_zone"
 ZERO_HEALTH_DIR = EXTERNAL_DIR / "Zero-Health"
@@ -575,6 +576,7 @@ def main() -> None:
     generate_scripts(compose_cmd)
     write_summary()
     print_summary()
+
 
 if __name__ == "__main__":
     main()
