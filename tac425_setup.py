@@ -439,7 +439,8 @@ def generate_dns_assets() -> None:
 
     if not named_conf.exists():
         named_conf.write_text(textwrap.dedent("""\
-            options {
+                include "/etc/bind/named.conf.local";
+                options {
                 directory "/var/cache/bind";
                 recursion yes;
                 allow-query { any; };
@@ -472,7 +473,7 @@ def generate_dns_assets() -> None:
             ns      IN  A   127.0.0.1
             www     IN  A   127.0.0.1
             dev     IN  A   127.0.0.1
-            hint    IN  TXT "Try a zone transfer"
+            hint    IN  TXT "Zone transfer accomplished"
         """))
 
     log("[+] DNS assets ready")
