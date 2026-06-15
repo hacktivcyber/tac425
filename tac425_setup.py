@@ -31,6 +31,7 @@ WORK_DIR = Path.home() / "TAC425"
 EXTERNAL_DIR = WORK_DIR / "external"
 DNS_DIR = EXTERNAL_DIR / "dns_zone"
 ZERO_HEALTH_DIR = EXTERNAL_DIR / "Zero-Health"
+ZERO_HEALTH_COMPOSE_OVERRIDE = ZERO_HEALTH_DIR / "docker-compose.tac425.yml"
 WORDLISTS_LINK = WORK_DIR / "wordlists"
 CONTAINER_SCRIPTS_DIR = WORK_DIR / "container_scripts"
 VENV_DIR = WORK_DIR / ".venv"
@@ -327,6 +328,23 @@ def ensure_zero_health_repo() -> None:
         log("[+] Wrote Zero-Health .env")
 
 
+def ensure_zero_health_compose_override() -> None:
+    ZERO_HEALTH_DIR.mkdir(parents=True, exist_ok=True)
+    ZERO_HEALTH_COMPOSE_OVERRIDE.write_text(textwrap.dedent("""\
+        services:
+          server:
+            ports:
+              - "5000:5000"
+
+          client:
+            ports:
+              - "4000:3000"
+            build:
+              args:
+                VITE_API_URL: http://localhost:5000
+    """))
+    log("[+] Wrote Zero-Health compose override")
+
 APP_SPECS = [
     {
         "name": "dns_zone",
@@ -369,7 +387,7 @@ APP_SPECS = [
         "label": "Zero Health",
         "kind": "repo",
         "repo_dir": ZERO_HEALTH_DIR,
-        "host_port": 5000,
+        "host_port": 4000,
         "path": "/",
     },
 ]
@@ -490,7 +508,7 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
             if [ ! -f .env ] && [ -f .env.example ]; then
                 cp .env.example .env
             fi
-            {compose_cmd} -f docker-compose.yml up -d
+            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml up -d
             echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}"
         """)
 
@@ -517,7 +535,7 @@ def stop_script_text(app: dict, compose_cmd: str) -> str:
             #!/usr/bin/env bash
             set -euo pipefail
             cd "{app['repo_dir']}"
-            {compose_cmd} -f docker-compose.yml down -v
+            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml down -v
             echo "[+] {app['label']} stopped"
         """)
 
@@ -536,6 +554,7 @@ def healthcheck_command(app: dict) -> str:
 def build_zero_health_container(compose_cmd: str) -> None:
     state = load_state()
     ensure_zero_health_repo()
+    ensure_zero_health_compose_override()
     patch_zero_health_dockerfile_for_arm64()
 
     if state.get("zero_health_built"):
@@ -544,7 +563,7 @@ def build_zero_health_container(compose_cmd: str) -> None:
 
     compose_parts = compose_cmd.split()
     run_retry(
-        compose_parts + ["-f", "docker-compose.yml", "build"],
+        compose_parts + ["-f", "docker-compose.yml", "-f", "docker-compose.tac425.yml", "build"],
         "Build Zero-Health",
         cwd=ZERO_HEALTH_DIR,
     )
@@ -580,7 +599,8 @@ def write_summary() -> None:
           Juice Shop   -> http://127.0.0.1:3000
           WrongSecrets -> http://127.0.0.1:8080
           WebGoat      -> http://127.0.0.1:8888/WebGoat
-          Zero Health  -> http://127.0.0.1:5000
+          Zero Health  -> http://127.0.0.1:4000
+          Zero Health API -> http://127.0.0.1:5000
     """))
 
 
@@ -595,7 +615,8 @@ def print_summary() -> None:
     print("  Juice Shop   -> http://127.0.0.1:3000")
     print("  WrongSecrets -> http://127.0.0.1:8080")
     print("  WebGoat      -> http://127.0.0.1:8888/WebGoat")
-    print("  Zero Health  -> http://127.0.0.1:5000")
+    print("  Zero Health  -> http://127.0.0.1:4000")
+    print("  Zero Health API -> http://127.0.0.1:5000")
     print("")
 
 
