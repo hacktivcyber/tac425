@@ -17,16 +17,17 @@ import argparse
 import json
 import logging
 import os
+import platform
 import shutil
 import subprocess
 import sys
 import textwrap
 import time
+import re
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WORK_DIR = Path.home() / "TAC425"
-LABS_DIR = WORK_DIR / "labs"
 EXTERNAL_DIR = WORK_DIR / "external"
 DNS_DIR = EXTERNAL_DIR / "dns_zone"
 ZERO_HEALTH_DIR = EXTERNAL_DIR / "Zero-Health"
@@ -74,6 +75,48 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
+
+
+
+def is_arm64_platform() -> bool:
+    return platform.machine().lower() in {"arm64", "aarch64"}
+
+
+def patch_zero_health_dockerfile_for_arm64() -> None:
+    """
+    Patch the Zero-Health server Dockerfile so native addon compilation works
+    on arm64. The server Dockerfile is the root Dockerfile in the repo.
+    """
+    if not is_arm64_platform():
+        return
+
+    dockerfile = ZERO_HEALTH_DIR / "Dockerfile"
+    if not dockerfile.exists():
+        log(f"[WARN] Zero-Health Dockerfile not found at {dockerfile}; skipping arm64 patch")
+        return
+
+    original = dockerfile.read_text()
+    patched = original
+
+    patched = re.sub(
+        r"RUN apk add --no-cache postgresql-client curl\b",
+        "RUN apk add --no-cache postgresql-client curl python3 build-base libxml2-dev",
+        patched,
+        count=1,
+    )
+
+    if "PYTHON=/usr/bin/python3" not in patched:
+        patched = patched.replace(
+            "WORKDIR /app\n",
+            "WORKDIR /app\nENV PYTHON=/usr/bin/python3\nENV npm_config_python=/usr/bin/python3\n",
+            1,
+        )
+
+    if patched != original:
+        dockerfile.write_text(patched)
+        log(f"[+] Patched Zero-Health Dockerfile for arm64: {dockerfile}")
+    else:
+        log("[=] Zero-Health Dockerfile already arm64-ready; no patch needed")
 
 def log(msg: str) -> None:
     print(msg)
@@ -248,9 +291,6 @@ def ensure_docker() -> tuple[list[str], str]:
         run(["docker-compose", "--version"], "Check Docker Compose")
     else:
         run(docker_cmd + ["compose", "version"], "Check Docker Compose")
-
-    if shutil.which("npm") is None:
-        run(["sudo", "apt-get", "install", "-y", "npm"], "Install npm")
 
     return docker_cmd, compose_cmd
 
@@ -496,6 +536,7 @@ def healthcheck_command(app: dict) -> str:
 def build_zero_health_container(compose_cmd: str) -> None:
     state = load_state()
     ensure_zero_health_repo()
+    patch_zero_health_dockerfile_for_arm64()
 
     if state.get("zero_health_built"):
         log("[=] Zero-Health already built")
