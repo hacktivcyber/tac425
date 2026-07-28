@@ -9,6 +9,7 @@ This version provisions:
 - jeroenwillemsen/wrongsecrets
 - webgoat/webgoat
 - Zero-Health (cloned from GitHub and run locally)
+- Mutillidae II (docker-compose stack from GitHub / Docker Hub images)
 """
 
 from __future__ import annotations
@@ -32,6 +33,9 @@ EXTERNAL_DIR = WORK_DIR / "external"
 DNS_DIR = EXTERNAL_DIR / "dns_zone"
 ZERO_HEALTH_DIR = EXTERNAL_DIR / "Zero-Health"
 ZERO_HEALTH_COMPOSE_OVERRIDE = ZERO_HEALTH_DIR / "docker-compose.tac425.yml"
+MUTILLIDAE_DIR = EXTERNAL_DIR / "mutillidae-dockerhub"
+MUTILLIDAE_ARM64_DIR = EXTERNAL_DIR / "mutillidae-docker"
+MUTILLIDAE_COMPOSE_OVERRIDE = MUTILLIDAE_DIR / "docker-compose.tac425.yml"
 WORDLISTS_LINK = WORK_DIR / "wordlists"
 CONTAINER_SCRIPTS_DIR = WORK_DIR / "container_scripts"
 VENV_DIR = WORK_DIR / ".venv"
@@ -338,12 +342,69 @@ def ensure_zero_health_compose_override() -> None:
 
           client:
             ports:
-              - "4000:3000"
+              - "3000:3000"
             build:
               args:
                 VITE_API_URL: http://localhost:5000
     """))
     log("[+] Wrote Zero-Health compose override")
+
+def mutillidae_is_arm64() -> bool:
+    return is_arm64_platform()
+
+
+def mutillidae_repo_dir() -> Path:
+    return MUTILLIDAE_ARM64_DIR if mutillidae_is_arm64() else MUTILLIDAE_DIR
+
+
+def mutillidae_repo_url() -> str:
+    return (
+        "https://github.com/webpwnized/mutillidae-docker.git"
+        if mutillidae_is_arm64()
+        else "https://github.com/webpwnized/mutillidae-dockerhub.git"
+    )
+
+
+def mutillidae_compose_file() -> str:
+    return ".build/docker-compose.yml" if mutillidae_is_arm64() else "docker-compose.yml"
+
+
+def mutillidae_access_url() -> str:
+    return "http://127.0.0.1:80"
+
+def ensure_mutillidae_compose_override() -> None:
+    MUTILLIDAE_DIR.mkdir(parents=True, exist_ok=True)
+    MUTILLIDAE_COMPOSE_OVERRIDE.write_text(textwrap.dedent("""\
+        services:
+          database:
+            platform: linux/amd64
+
+          database_admin:
+            platform: linux/amd64
+
+          www:
+            platform: linux/amd64
+
+          directory:
+            platform: linux/amd64
+
+          directory_admin:
+            platform: linux/amd64
+    """))
+    log("[+] Wrote Mutillidae II compose override")
+
+
+def ensure_mutillidae_repo() -> None:
+    repo_dir = mutillidae_repo_dir()
+    repo_url = mutillidae_repo_url()
+
+    if not repo_dir.exists():
+        run_retry(["git", "clone", repo_url, str(repo_dir)], "Clone Mutillidae II")
+    else:
+        log("[=] Mutillidae II repository already present")
+
+    if not mutillidae_is_arm64():
+        ensure_mutillidae_compose_override()
 
 APP_SPECS = [
     {
@@ -387,16 +448,30 @@ APP_SPECS = [
         "label": "Zero Health",
         "kind": "repo",
         "repo_dir": ZERO_HEALTH_DIR,
-        "host_port": 4000,
+        "host_port": 3000,
         "path": "/",
+    },
+    {
+        "name": "mutillidae",
+        "label": "Mutillidae II",
+        "kind": "repo",
+        "repo_dir": MUTILLIDAE_DIR,
+        "host_port": 80,
+        "path": "/",
+        "access_url": "http://127.0.0.1:80",
     },
 ]
 
 
 def build_or_pull_apps(docker_cmd: list[str]) -> None:
     state = load_state()
+    compose_cmd = "docker-compose" if shutil.which("docker-compose") else "docker compose"
+    compose_parts = compose_cmd.split()
+
     for app in APP_SPECS:
         if state.get(app["name"]):
+            if app["name"] == "mutillidae":
+                ensure_mutillidae_repo()
             log(f"[=] {app['name']} already prepared")
             continue
 
@@ -405,6 +480,22 @@ def build_or_pull_apps(docker_cmd: list[str]) -> None:
         elif app["kind"] == "dns":
             dns_dir = generate_dns_assets()
             run_retry(docker_cmd + ["build", "-t", app["image"], str(dns_dir)], f"Build {app['name']}")
+        elif app["name"] == "zero_health":
+            ensure_zero_health_repo()
+        elif app["name"] == "mutillidae":
+            ensure_mutillidae_repo()
+            if mutillidae_is_arm64():
+                run_retry(
+                    compose_parts + ["-f", ".build/docker-compose.yml", "up", "--build", "--detach"],
+                    "Build Mutillidae II",
+                    cwd=mutillidae_repo_dir(),
+                )
+            else:
+                run_retry(
+                    compose_parts + ["-f", "docker-compose.yml", "-f", "docker-compose.tac425.yml", "pull"],
+                    "Pull Mutillidae II",
+                    cwd=mutillidae_repo_dir(),
+                )
         else:
             ensure_zero_health_repo()
 
@@ -502,15 +593,23 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
         """)
 
     else:
+        if app["name"] == "mutillidae":
+            repo_dir = mutillidae_repo_dir()
+            compose_file = mutillidae_compose_file()
+            access_url = "http://127.0.0.1:80"
+        else:
+            repo_dir = app["repo_dir"]
+            compose_file = "docker-compose.yml"
+            access_url = app.get("access_url", f"http://127.0.0.1:{app['host_port']}")
         return textwrap.dedent(f"""\
             #!/usr/bin/env bash
             set -euo pipefail
-            cd "{app['repo_dir']}"
+            cd "{repo_dir}"
             if [ ! -f .env ] && [ -f .env.example ]; then
                 cp .env.example .env
             fi
-            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml up -d
-            echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}"
+            {compose_cmd} -f {compose_file} up -d
+            echo "[+] {app['label']} available at {access_url}"
         """)
 
 
@@ -532,11 +631,17 @@ def stop_script_text(app: dict, compose_cmd: str) -> str:
         """)
 
     else:
+        if app["name"] == "mutillidae":
+            repo_dir = mutillidae_repo_dir()
+            compose_file = mutillidae_compose_file()
+        else:
+            repo_dir = app["repo_dir"]
+            compose_file = "docker-compose.yml"
         return textwrap.dedent(f"""\
             #!/usr/bin/env bash
             set -euo pipefail
-            cd "{app['repo_dir']}"
-            {compose_cmd} -f docker-compose.yml -f docker-compose.tac425.yml down -v
+            cd "{repo_dir}"
+            {compose_cmd} -f {compose_file} down -v
             echo "[+] {app['label']} stopped"
         """)
 
@@ -548,6 +653,8 @@ def healthcheck_command(app: dict) -> str:
         return f"curl -fsS http://127.0.0.1:{app['host_port']} >/dev/null"
     if app["kind"] == "dns":
         return f"dig +time=2 +tries=1 @127.0.0.1 -p {app['host_port']} {app['zone']} SOA >/dev/null"
+    if app["name"] == "mutillidae":
+        return "curl -fsS http://127.0.0.1:80>/dev/null"
     return f"curl -fsS http://127.0.0.1:{app['host_port']} >/dev/null"
 
 
@@ -600,8 +707,9 @@ def write_summary() -> None:
           Juice Shop   -> http://127.0.0.1:3000
           WrongSecrets -> http://127.0.0.1:8080
           WebGoat      -> http://127.0.0.1:8888/WebGoat
-          Zero Health  -> http://127.0.0.1:4000
+          Zero Health  -> http://127.0.0.1:3000
           Zero Health API -> http://127.0.0.1:5000
+          Mutillidae II -> http://127.0.0.1:80
     """))
 
 
@@ -616,8 +724,9 @@ def print_summary() -> None:
     print("  Juice Shop   -> http://127.0.0.1:3000")
     print("  WrongSecrets -> http://127.0.0.1:8080")
     print("  WebGoat      -> http://127.0.0.1:8888/WebGoat")
-    print("  Zero Health  -> http://127.0.0.1:4000")
+    print("  Zero Health  -> http://127.0.0.1:3000")
     print("  Zero Health API -> http://127.0.0.1:5000")
+    print("  Mutillidae II -> http://127.0.0.1:80")
     print("")
 
 
