@@ -2,7 +2,7 @@
 
 This guide is made to help with the install of the University of Southern California's (USC) TAC 425 Web Application Security course material
 
-## 1) Freeze the scope
+## 1) Instructions
 
 Ensure you have an install of Kali Linux 2024 or above running in a VM session of some kind. Personally, I use UTM in my MacBook and VirtualBox on my Windows Machine
 Git the TAC425 setup script from github:
