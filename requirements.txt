@@ -1,2 +1,0 @@
-# TAC425 Installer Requirements
-# Intentionally minimal; the installer uses Python standard library only
