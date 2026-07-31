@@ -16,7 +16,7 @@ from a terminal session within Kali do the following:
     1. It will install ALL the basic things you will need for the Labs into the ~/TAC425 folder.
     1. It will take approx. 30 min total & about 5 GB
 1.	You may encounter a “RunTimeError: exit code 1”
-    1. This is related to the currently logged in account Docker not being recognized as being in the docker group. Even though your account is added to the docker group during the install, the OS doesn't recognize this until a relog occurs.
+    1. This is related to the currently logged in account not being recognized as being in the docker group. Even though your account is added to the docker group during the install, the OS doesn't recognize this until a relog occurs.
    
 The error looks something like this:
 
