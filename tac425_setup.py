@@ -389,7 +389,8 @@ def ensure_mutillidae_compose_override() -> None:
 
           directory:
             platform: linux/amd64
-
+            ports:
+              - "389:389"
           directory_admin:
             platform: linux/amd64
     """))
@@ -765,6 +766,7 @@ def write_summary() -> None:
           Juice Shop   -> http://127.0.0.1:3000
           WrongSecrets -> http://127.0.0.1:8080
           WebGoat      -> http://127.0.0.1:8888/WebGoat
+          WebWolf      -> http://127.0.0.1:9090/WebWolf
           Zero Health  -> http://127.0.0.1:4000
           Zero Health API -> http://127.0.0.1:5000
           Mutillidae II -> http://127.0.0.1:80
@@ -782,6 +784,7 @@ def print_summary() -> None:
     print("  Juice Shop   -> http://127.0.0.1:3000")
     print("  WrongSecrets -> http://127.0.0.1:8080")
     print("  WebGoat      -> http://127.0.0.1:8888/WebGoat")
+    print("  WebWolf      -> http://127.0.0.1:9090/WebWolf")
     print("  Zero Health  -> http://127.0.0.1:4000")
     print("  Zero Health API -> http://127.0.0.1:5000")
     print("  Mutillidae II -> http://127.0.0.1:80")
