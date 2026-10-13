@@ -81,8 +81,12 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
+
+
+
 def is_arm64_platform() -> bool:
     return platform.machine().lower() in {"arm64", "aarch64"}
+
 
 def patch_zero_health_dockerfile_for_arm64() -> None:
     """
@@ -625,12 +629,12 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
         extra_echo = app.get("extra_echo", "")
 
         return textwrap.dedent(f"""\
-            #!/usr/bin/env bash
-            set -euo pipefail
-            docker rm -f {app['name']} >/dev/null 2>&1 || true
-            docker run -d --name {app['name']} --restart unless-stopped -p 127.0.0.1:{app['host_port']}:{app['container_port']}{port_string}{env_string} {app['image']}
-            echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}{app['path']}{extra_echo}"
-        """)
+                #!/usr/bin/env bash
+                set -euo pipefail
+                docker rm -f {app['name']} >/dev/null 2>&1 || true
+                docker run -d --name {app['name']} --restart unless-stopped -p 127.0.0.1:{app['host_port']}:{app['container_port']}{port_string}{env_string} {app['image']}
+                echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}{app['path']}{extra_echo}"
+            """)
 
     elif app["kind"] == "dns":
         return textwrap.dedent(f"""\
@@ -653,6 +657,7 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
             repo_dir = app["repo_dir"]
             compose_file = "docker-compose.yml"
             access_url = app.get("access_url", f"http://127.0.0.1:{app['host_port']}")
+        ldap_setup = mutillidae_ldap_setup_text() if app["name"] == "mutillidae" else ""
         return textwrap.dedent(f"""\
             #!/usr/bin/env bash
             set -euo pipefail
@@ -661,6 +666,7 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
                 cp .env.example .env
             fi
             {compose_cmd} -f {compose_file} up -d
+            {ldap_setup}
             echo "[+] {app['label']} available at {access_url}"
         """)
 
