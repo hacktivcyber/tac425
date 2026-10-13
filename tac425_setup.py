@@ -35,7 +35,6 @@ ZERO_HEALTH_DIR = EXTERNAL_DIR / "Zero-Health"
 ZERO_HEALTH_COMPOSE_OVERRIDE = ZERO_HEALTH_DIR / "docker-compose.tac425.yml"
 MUTILLIDAE_DIR = EXTERNAL_DIR / "mutillidae-dockerhub"
 MUTILLIDAE_ARM64_DIR = EXTERNAL_DIR / "mutillidae-docker"
-MUTILLIDAE_LDIF_URL = "https://github.com/webpwnized/mutillidae-docker/raw/refs/heads/main/.build/ldap/configuration/ldif/mutillidae.ldif"
 MUTILLIDAE_COMPOSE_OVERRIDE = MUTILLIDAE_DIR / "docker-compose.tac425.yml"
 WORDLISTS_LINK = WORK_DIR / "wordlists"
 CONTAINER_SCRIPTS_DIR = WORK_DIR / "container_scripts"
@@ -212,7 +211,6 @@ def ensure_host_tools() -> None:
         "dig": "dnsutils",
         "zip": "zip",
         "unzip": "unzip",
-        "ldapadd": "ldap-utils",
     }
     for cmd, pkg in tool_map.items():
         if shutil.which(cmd) is None:
@@ -344,7 +342,7 @@ def ensure_zero_health_compose_override() -> None:
 
           client:
             ports:
-              - "4000:3000"
+              - "3000:3000"
             build:
               args:
                 VITE_API_URL: http://localhost:5000
@@ -396,14 +394,6 @@ def ensure_mutillidae_compose_override() -> None:
     log("[+] Wrote Mutillidae II compose override")
 
 
-def ensure_mutillidae_ldif() -> Path:
-    repo_dir = mutillidae_repo_dir()
-    ldif_path = repo_dir / ".build" / "ldap" / "configuration" / "ldif" / "mutillidae.ldif"
-    ldif_path.parent.mkdir(parents=True, exist_ok=True)
-    run(["curl", "-fsSL", MUTILLIDAE_LDIF_URL, "-o", str(ldif_path)], "Download Mutillidae LDAP LDIF")
-    return ldif_path
-
-
 def ensure_mutillidae_repo() -> None:
     repo_dir = mutillidae_repo_dir()
     repo_url = mutillidae_repo_url()
@@ -415,8 +405,6 @@ def ensure_mutillidae_repo() -> None:
 
     if not mutillidae_is_arm64():
         ensure_mutillidae_compose_override()
-
-    ensure_mutillidae_ldif()
 
 APP_SPECS = [
     {
@@ -436,6 +424,7 @@ APP_SPECS = [
         "host_port": 3000,
         "container_port": 3000,
         "path": "/",
+        "env_vars": ["NODE_ENV=unsafe"],
     },
     {
         "name": "wrongsecrets",
@@ -454,13 +443,15 @@ APP_SPECS = [
         "host_port": 8888,
         "container_port": 8080,
         "path": "/WebGoat",
+        "extra_ports": ["127.0.0.1:9090:9090"],
+        "extra_echo": " WebWolf available at http://127.0.0.1:9090/WebWolf",
     },
     {
         "name": "zero_health",
         "label": "Zero Health",
         "kind": "repo",
         "repo_dir": ZERO_HEALTH_DIR,
-        "host_port": 4000,
+        "host_port": 3000,
         "path": "/",
     },
     {
@@ -582,47 +573,24 @@ def generate_dns_assets() -> None:
     log("[+] DNS assets ready")
     return dns_dir
 
-def mutillidae_ldap_setup_text() -> str:
-    return textwrap.dedent("""\
-        echo "[*] Waiting for Mutillidae LDAP service on 127.0.0.1:389"
-        for attempt in $(seq 1 30); do
-            if ldapsearch -x -H ldap://localhost:389 \
-                -D "cn=admin,dc=mutillidae,dc=localhost" \
-                -w mutillidae \
-                -b "dc=mutillidae,dc=localhost" \
-                -s base "(objectClass=*)" >/dev/null 2>&1; then
-                echo "[=] Mutillidae LDAP service is ready"
-                if ldapsearch -x -H ldap://localhost:389 \
-                    -D "cn=admin,dc=mutillidae,dc=localhost" \
-                    -w mutillidae \
-                    -b "cn=fred,ou=users,dc=mutillidae,dc=localhost" \
-                    -s base "(objectClass=*)" >/dev/null 2>&1; then
-                    echo "[=] Mutillidae LDAP database already populated"
-                else
-                    echo "[*] Populating Mutillidae LDAP database"
-                    cd "./.build/ldap/configuration/ldif"
-                    ldapadd -c -x -D "cn=admin,dc=mutillidae,dc=localhost" -w mutillidae -H ldap://localhost:389 -f ./mutillidae.ldif
-                    echo "[+] Mutillidae LDAP database populated"
-                fi
-                break
-            fi
-            if [ "${attempt}" -eq 30 ]; then
-                echo "[ERROR] Mutillidae LDAP service did not become ready"
-                exit 1
-            fi
-            sleep 2
-        done
-    """)
-
 
 def start_script_text(app: dict, compose_cmd: str) -> str:
     if app["kind"] == "image":
+        # Process optional lists for environment variables and extra ports
+        env_vars = app.get("env_vars", [])
+        env_string = "".join([f' -e "{e}"' for e in env_vars])
+
+        extra_ports = app.get("extra_ports", [])
+        port_string = "".join([f' -p {p}' for p in extra_ports])
+
+        extra_echo = app.get("extra_echo", "")
+
         return textwrap.dedent(f"""\
             #!/usr/bin/env bash
             set -euo pipefail
             docker rm -f {app['name']} >/dev/null 2>&1 || true
-            docker run -d --name {app['name']} --restart unless-stopped -p 127.0.0.1:{app['host_port']}:{app['container_port']} {app['image']}
-            echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}{app['path']}"
+            docker run -d --name {app['name']} --restart unless-stopped -p 127.0.0.1:{app['host_port']}:{app['container_port']}{port_string}{env_string} {app['image']}
+            echo "[+] {app['label']} available at http://127.0.0.1:{app['host_port']}{app['path']}{extra_echo}"
         """)
 
     elif app["kind"] == "dns":
@@ -646,7 +614,6 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
             repo_dir = app["repo_dir"]
             compose_file = "docker-compose.yml"
             access_url = app.get("access_url", f"http://127.0.0.1:{app['host_port']}")
-        ldap_setup = mutillidae_ldap_setup_text() if app["name"] == "mutillidae" else ""
         return textwrap.dedent(f"""\
             #!/usr/bin/env bash
             set -euo pipefail
@@ -655,7 +622,6 @@ def start_script_text(app: dict, compose_cmd: str) -> str:
                 cp .env.example .env
             fi
             {compose_cmd} -f {compose_file} up -d
-            {ldap_setup}
             echo "[+] {app['label']} available at {access_url}"
         """)
 
@@ -701,7 +667,7 @@ def healthcheck_command(app: dict) -> str:
     if app["kind"] == "dns":
         return f"dig +time=2 +tries=1 @127.0.0.1 -p {app['host_port']} {app['zone']} SOA >/dev/null"
     if app["name"] == "mutillidae":
-        return "curl -fsS http://127.0.0.1:80 >/dev/null"
+        return "curl -fsS http://127.0.0.1:80>/dev/null"
     return f"curl -fsS http://127.0.0.1:{app['host_port']} >/dev/null"
 
 
@@ -754,7 +720,8 @@ def write_summary() -> None:
           Juice Shop   -> http://127.0.0.1:3000
           WrongSecrets -> http://127.0.0.1:8080
           WebGoat      -> http://127.0.0.1:8888/WebGoat
-          Zero Health  -> http://127.0.0.1:4000
+          WebWolf      -> http://127.0.0.1:9090/WebWolf
+          Zero Health  -> http://127.0.0.1:3000
           Zero Health API -> http://127.0.0.1:5000
           Mutillidae II -> http://127.0.0.1:80
     """))
@@ -771,7 +738,8 @@ def print_summary() -> None:
     print("  Juice Shop   -> http://127.0.0.1:3000")
     print("  WrongSecrets -> http://127.0.0.1:8080")
     print("  WebGoat      -> http://127.0.0.1:8888/WebGoat")
-    print("  Zero Health  -> http://127.0.0.1:4000")
+    print("  WebWolf      -> http://127.0.0.1:9090/WebWolf")
+    print("  Zero Health  -> http://127.0.0.1:3000")
     print("  Zero Health API -> http://127.0.0.1:5000")
     print("  Mutillidae II -> http://127.0.0.1:80")
     print("")
